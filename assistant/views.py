@@ -1,32 +1,58 @@
 from dotenv import load_dotenv
+import requests
+from langchain.tools import tool
 from langchain.tools import Tool
-from .tools import CSVSearchTool,csv_path
 from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import LLMChain
 from langchain_community.chat_message_histories.upstash_redis import UpstashRedisChatMessageHistory
 from langchain.prompts import ChatPromptTemplate,MessagesPlaceholder
-import chromadb
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores.chroma import Chroma
+from langchain.vectorstores.base import VectorStore
 load_dotenv()
+from typing import List
+from langchain.text_splitter import CharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_openai import OpenAIEmbeddings
+import csv
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
 
-chroma_client = chromadb.Client()
+def read_csv(file_path: str, csv_args: dict = {'delimiter': ','}):
+    data = []
+    with open(file_path, 'r') as file:
+        csv_reader = csv.reader(file, **csv_args)
+        for row in csv_reader:
+            data.append(' '.join(row))
+    return data
 
+def chroma_db_tool() -> VectorStore:
+    raw_documents = read_csv('assistantweb/data/products.csv/')
+    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+    chunks = text_splitter.split_documents(raw_documents)
+    embedding_function = OpenAIEmbeddings()
+    db = Chroma.from_documents(chunks, embedding_function)
+    return db
+
+
+@tool
+class SearchTool:
+    """Search data in ChromaDB using a given query."""
+    name = "chroma_db_search"
+
+    def __call__(self, query: str) -> str:
+        """Search data in ChromaDB using a given query."""
+        db = chroma_db_tool()
+        docs = db.similarity_search(query)
+        return docs[0].page_content if docs else "No results found."
 
 tools = [
     Tool(
         name="chroma_db_search",
-        func=chroma_db_tool.run,
-        description="Useful for retrieving data from ChromaDB based on user queries."
-    )
-]
-
-
-tools = [
-    Tool(
-        name="csv_search",
-        func=CSVSearchTool.run,
-        description="Useful for when you need to answer questions about cars based on a CSV database."
-    )
+        func=lambda tool_input: SearchTool().__call__(tool_input),
+        description="Useful for retrieving data from ChromaDB based on user queries"
+    )       
 ]
 
 model = ChatOpenAI(
@@ -60,18 +86,25 @@ chain = LLMChain(
     prompt=prompt,
     verbose=True,
     memory=memory,
-    tools=tools
-)
+    )
+_call_=lambda input: SearchTool().run(input, tools),
 
 
+@csrf_exempt
 def ask(request):
     try:
         if request.method == 'POST':
-            question = request.json.get('question')
+            question = request.get('question')
             if question:
                 response = chain(input=question)
-                return {'response': response}
+                return handle_response(response)
             else:
                 return {'error': 'No question provided in the request'}
     except Exception as e:
         return {'error': str(e)}
+
+def handle_response(response):
+    if "error" in response:
+        return JsonResponse({"error": response["error"]}, status=400)
+    else:
+        return JsonResponse({"response": response["response"]})
