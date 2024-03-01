@@ -1,11 +1,11 @@
 from dotenv import load_dotenv
 from langchain.tools import Tool
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, messages_to_dict
+from langchain.prompts import PromptTemplate
 import json
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories.upstash_redis import UpstashRedisChatMessageHistory
-from langchain.prompts import ChatPromptTemplate
+from langchain.prompts.chat import ChatPromptTemplate,SystemMessagePromptTemplate,HumanMessagePromptTemplate,MessagesPlaceholder
 from langchain_community.vectorstores.chroma import Chroma
 from langchain.text_splitter import CharacterTextSplitter
 import csv
@@ -92,12 +92,32 @@ memory = ConversationBufferMemory(
     return_messages=True
     )
 
+messages = [
+    SystemMessagePromptTemplate(prompt=PromptTemplate(input_variables=[], template='You are a helpful assistant')),
+    MessagesPlaceholder(variable_name='chat_history', optional=True),
+    HumanMessagePromptTemplate(prompt=PromptTemplate(input_variables=['input'], template='{input}')),
+    MessagesPlaceholder(variable_name='agent_scratchpad'),
+    MessagesPlaceholder(variable_name='tools'),
+    MessagesPlaceholder(variable_name='tool_names')
+]
 
-prompt = ChatPromptTemplate.from_messages([
-    (SystemMessage, {"content": "eres un vendedor de un consecionario de autos nuevos, tu labor es informar y ayudar a los clientes en sus compras con la información a disposición, tienes que responder de forma amable y únicamente con la información que tengas a disposición ya sea de la base de datos o de tu memoria. tienes que dar la respuesta en formato json"}),
-    (AIMessage, {"content": "Hola! ¿Cómo puedo ayudarte hoy?"}),
-    (HumanMessage, {"content": "{input}"}),
-])
+prompt = ChatPromptTemplate.from_messages(messages)
+
+# template = "eres un vendedor de un consecionario de autos nuevos, tu labor es informar y ayudar a los clientes en sus compras con la información a disposición, tienes que responder de forma amable y únicamente con la información que tengas a disposición ya sea de la base de datos o de tu memoria. tienes que dar la respuesta en formato json"
+# human_template = "{input}"
+# ai_template = "Hola! ¿Cómo puedo ayudarte hoy?"
+
+# prompt = ChatPromptTemplate.from_messages([
+#     ("system", template),
+#     ("human", human_template),
+# ])
+
+# prompt = ChatPromptTemplate.from_messages([
+#     (SystemMessage, {"content": "eres un vendedor de un consecionario de autos nuevos, tu labor es informar y ayudar a los clientes en sus compras con la información a disposición, tienes que responder de forma amable y únicamente con la información que tengas a disposición ya sea de la base de datos o de tu memoria. tienes que dar la respuesta en formato json"}),
+#     (AIMessage, {"content": "Hola! ¿Cómo puedo ayudarte hoy?"}),
+#     (HumanMessage, {"content": "{input}"}),
+# ])
+
 json_agent = create_json_chat_agent(
     llm=model,
     prompt=prompt,
@@ -108,6 +128,7 @@ agent = AgentExecutor(
     agent=json_agent,
     memory=memory,
     tools=tools,
+    input_variables=["input"],
 )
 
 @csrf_exempt
@@ -123,14 +144,12 @@ def ask(request: HttpRequest):
     """
     try:
         data = json.loads(request.body)
-        # question_text = data.get('question') 
-        if data:
-            # question_content = HumanMessage(content=question_text) 
-            response = agent.invoke(data)
-            print(response)
-            # response_dict =messages_to_dict(response)
-            # response.dumps(response)
-            # return JsonResponse({"response": response})
+        question = data.get('question')
+
+        if question:
+            # Pass the input as a dictionary
+            response = agent.invoke({'input': question})
+            return JsonResponse({"response": response})
         else:
             return JsonResponse({"error": "Question cannot be blank or null"}, status=400)
     except Exception as e:
