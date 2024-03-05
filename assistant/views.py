@@ -1,16 +1,16 @@
 from dotenv import load_dotenv
-from langchain.tools import Tool
+from langchain.pydantic_v1 import BaseModel, Field
+from langchain.tools import BaseTool, StructuredTool, tool
 from langchain.prompts import PromptTemplate
 import json
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI,OpenAIEmbeddings
 from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories.upstash_redis import UpstashRedisChatMessageHistory
-from langchain.prompts.chat import ChatPromptTemplate,SystemMessagePromptTemplate,HumanMessagePromptTemplate,MessagesPlaceholder
+from langchain.prompts.chat import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, MessagesPlaceholder
 from langchain_community.vectorstores.chroma import Chroma
 from langchain.text_splitter import CharacterTextSplitter
 import csv
 import logging
-import json
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpRequest
 from django.views.decorators.http import require_POST
@@ -18,15 +18,6 @@ from langchain.agents import AgentExecutor, create_json_chat_agent
 load_dotenv()
 
 def read_csv(file_path: str, csv_args: dict = {'delimiter': ','}):
-    """Reads a CSV file and returns its contents as a list of strings.
-
-    Args:
-        file_path (str): The path to the CSV file.
-        csv_args (dict, optional): Additional arguments to be passed to csv.reader. Defaults to {'delimiter': ','}.
-
-    Returns:
-        List[str]: A list containing the contents of the CSV file.
-    """
     data = []
     with open(file_path, 'r') as file:
         csv_reader = csv.reader(file, **csv_args)
@@ -37,7 +28,7 @@ def read_csv(file_path: str, csv_args: dict = {'delimiter': ','}):
 def chroma_db_tool() -> Chroma:
     logging.info("Initializing Chroma DB tool...")
     try:
-        raw_documents = read_csv('assistantweb/data/products.csv')
+        raw_documents = read_csv('path/to/your/csv')
         text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
         chunks = text_splitter.split_documents(raw_documents)
         embedding_function = OpenAIEmbeddings()
@@ -49,10 +40,11 @@ def chroma_db_tool() -> Chroma:
         raise
 
 
-class SearchTool:
-    """Search data in ChromaDB using a given query."""
-    
-    def __call__(self, query: str) -> str:
+
+class SearchTool(BaseTool):
+    name = "chroma_db_search"  
+    description = "Useful for retrieving data of cars for the user"  
+    def _run (self, query: str) -> str:
         """Searches data in Chroma vector store using a given query.
 
         Args:
@@ -61,22 +53,19 @@ class SearchTool:
         Returns:
             str: The search result.
         """
-        db = chroma_db_tool()
+        db = chroma_db_tool()  
         docs = db.similarity_search(query)
         return docs[0].page_content if docs else "No results found."
+    def _arun (self, query: str) -> str:
+        """Use the tool asynchronously."""
+        raise NotImplementedError("this tool does not support async")
 
-search_tool_instance = SearchTool()  
 
-tools = [
-    Tool(
-        name="chroma_db_search",
-        func=search_tool_instance.__call__,
-        description="Useful for retrieving data from ChromaDB based on user queries"
-    )       
-]
+
+tools = [SearchTool()]
 
 model = ChatOpenAI(
-    model="gpt-3.5-turbo",
+    model="gpt-4-1106-preview",
     temperature=0
 )
 
@@ -93,30 +82,15 @@ memory = ConversationBufferMemory(
     )
 
 messages = [
-    SystemMessagePromptTemplate(prompt=PromptTemplate(input_variables=[], template='You are a helpful assistant')),
+    SystemMessagePromptTemplate(prompt=PromptTemplate(input_variables=[], template='eres un vendedor de un consecionario que debe ser lo mas amable y amigable posible con el cliente e intentar venderle alguno de nuestros autos a toda costa. tu no tienes ningun conocimiento sobre autos asi que debes responder solamente con los datos proporcionados por tu herramienta: chroma_db_search. puedes decorar esa informacion para hacer un mensaje mas comodo de leer y que parezca una interaccion humana (siempre manteniendo la cordialidad) pero no puedes cambiar los valores recibidos por tu herramienta chroma_db_search')),
     MessagesPlaceholder(variable_name='chat_history', optional=True),
     HumanMessagePromptTemplate(prompt=PromptTemplate(input_variables=['input'], template='{input}')),
     MessagesPlaceholder(variable_name='agent_scratchpad'),
     MessagesPlaceholder(variable_name='tools'),
-    MessagesPlaceholder(variable_name='tool_names')
+    MessagesPlaceholder(variable_name='tool_names'),
 ]
 
 prompt = ChatPromptTemplate.from_messages(messages)
-
-# template = "eres un vendedor de un consecionario de autos nuevos, tu labor es informar y ayudar a los clientes en sus compras con la información a disposición, tienes que responder de forma amable y únicamente con la información que tengas a disposición ya sea de la base de datos o de tu memoria. tienes que dar la respuesta en formato json"
-# human_template = "{input}"
-# ai_template = "Hola! ¿Cómo puedo ayudarte hoy?"
-
-# prompt = ChatPromptTemplate.from_messages([
-#     ("system", template),
-#     ("human", human_template),
-# ])
-
-# prompt = ChatPromptTemplate.from_messages([
-#     (SystemMessage, {"content": "eres un vendedor de un consecionario de autos nuevos, tu labor es informar y ayudar a los clientes en sus compras con la información a disposición, tienes que responder de forma amable y únicamente con la información que tengas a disposición ya sea de la base de datos o de tu memoria. tienes que dar la respuesta en formato json"}),
-#     (AIMessage, {"content": "Hola! ¿Cómo puedo ayudarte hoy?"}),
-#     (HumanMessage, {"content": "{input}"}),
-# ])
 
 json_agent = create_json_chat_agent(
     llm=model,
@@ -126,32 +100,27 @@ json_agent = create_json_chat_agent(
 
 agent = AgentExecutor(
     agent=json_agent,
+    llm=model,
+    max_iterations=3,
+    early_stopping_method='generate',
     memory=memory,
     tools=tools,
     input_variables=["input"],
+    verbose=True,
+    return_intermediate_steps=True,
 )
+
 
 @csrf_exempt
 @require_POST
 def ask(request: HttpRequest):
-    """Handles incoming HTTP POST requests for asking questions.
-
-    Args:
-        request (HttpRequest): The HTTP request object containing the question.
-
-    Returns:
-        JsonResponse: A JSON response containing the answer to the question.
-    """
     try:
         data = json.loads(request.body)
         question = data.get('question')
-
         if question:
-            # Pass the input as a dictionary
-            response = agent.invoke({'input': question})
+            response = agent.run({'input': question})
             return JsonResponse({"response": response})
         else:
             return JsonResponse({"error": "Question cannot be blank or null"}, status=400)
     except Exception as e:
-        print(f"Error occurred: {e}")
         return JsonResponse({'error': str(e)}, status=500)
