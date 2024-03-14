@@ -1,6 +1,5 @@
 from dotenv import load_dotenv
-from langchain.pydantic_v1 import BaseModel, Field
-from langchain.tools import BaseTool, StructuredTool, tool
+from langchain.tools import BaseTool
 from langchain.prompts import PromptTemplate
 import json
 from langchain_openai import ChatOpenAI,OpenAIEmbeddings
@@ -8,21 +7,15 @@ from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories.upstash_redis import UpstashRedisChatMessageHistory
 from langchain.prompts.chat import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, MessagesPlaceholder
 from langchain_community.vectorstores.chroma import Chroma
-from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.document_loaders.csv_loader import CSVLoader
-from langchain.embeddings.sentence_transformer import SentenceTransformerEmbeddings
-import csv
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpRequest
 from django.views.decorators.http import require_POST
 from langchain.agents import AgentExecutor, create_json_chat_agent
-from langchain.callbacks.manager import (
-    AsyncCallbackManagerForToolRun,
-    CallbackManagerForToolRun,
-)
+from langchain.callbacks.manager import AsyncCallbackManagerForToolRun,CallbackManagerForToolRun
+import logging
 from langchain.tools.render import render_text_description
-from typing import Optional, Type
-from langchain import hub
+from typing import Optional
 import os
 load_dotenv()
 
@@ -30,47 +23,28 @@ load_dotenv()
 UPSTASH_URL = os.getenv("UPSTASH_URL")
 UPSTASH_TOKEN = os.getenv("UPSTASH_TOKEN")
 
-# def read_csv(file_path: str, csv_args: dict = {'delimiter': ','}):
-#     data = []
-#     with open(file_path, 'r') as file:
-#         csv_reader = csv.reader(file, **csv_args)
-#         for row in csv_reader:
-#             data.append(' '.join(row))
-#     return data
-
-# def chroma_db_tool() -> Chroma:
-#     logging.info("Initializing Chroma DB tool...")
-#     try:
-#         raw_documents = read_csv('/home/fausto/assistantweb/data/products.csv')
-#         text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-#         chunks = text_splitter.split_documents(raw_documents)
-#         embedding_function = OpenAIEmbeddings()
-#         db = Chroma.from_documents(chunks, embedding_function) 
-#         logging.info(f"Chroma DB initialized successfully with {len(chunks)} chunks.")
-#         return db
-#     except Exception as e:
-#         logging.error(f"Failed to initialize Chroma DB: {e}")
-#         raise
-
 
 def chroma_db_tool() -> Chroma:
-    """_summary_
+    """Initialize the Chroma DB tool.
 
     Returns:
-        Chroma: _description_
+        Chroma: The Chroma database object.
     """
-    JsonResponse("Initializing Chroma DB tool...")
+    logging.info("Initializing Chroma DB tool...")
     try:
-        embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
-        loader = CSVLoader("./products.csv", encoding="windows-1252")  
+        embedding_function = OpenAIEmbeddings()
+        loader = CSVLoader("/home/fausto/assistantweb/data/products.csv")  
         documents = loader.load()
         db = Chroma.from_documents(documents, embedding_function)
         
-        JsonResponse(f"Chroma DB initialized successfully with {len(documents)} documents.")
+        logging.info(f"Chroma DB initialized successfully with {len(documents)} documents.")
         return db
     except Exception as e:
-        JsonResponse(f"Failed to initialize Chroma DB: {e}")
+        logging.error(f"Failed to initialize Chroma DB: {e}")
         raise
+
+global chroma_db
+chroma_db = chroma_db_tool()
 
 class SearchTool(BaseTool):
     name = "chroma_db_search"  
@@ -84,7 +58,7 @@ class SearchTool(BaseTool):
         Returns:
             str: The search result.
         """
-        db = chroma_db_tool()  
+        db = chroma_db
         docs = db.similarity_search(query)
         return docs[0].page_content if docs else "No results found."
     def _arun (self, query: str, run_manager: Optional[AsyncCallbackManagerForToolRun] = None) -> str:
@@ -92,6 +66,8 @@ class SearchTool(BaseTool):
         raise NotImplementedError("this tool does not support async")
 
 tools = [SearchTool()]
+
+
 
 model = ChatOpenAI(
     model="gpt-4-1106-preview",
@@ -183,8 +159,18 @@ def ask(request: HttpRequest):
         data = json.loads(request.body)
         question = data.get('question')
         if question:
-            response = agent.run({'input': question})
-            return JsonResponse({"response": response})
+            result = agent.run({'input': question})
+            if 'output' in result:
+                # Extrae la parte relevante de 'output'.
+                action_input = result['output'].get('action_input')
+                if action_input:
+                    return JsonResponse({"response": action_input})
+                else:
+                    # Si 'action_input' no está presente en 'output', maneja el caso.
+                    return JsonResponse({"error": "No action input found in the response"}, status=500)
+            else:
+                # Si la clave 'output' no está en el resultado, devuelve un error.
+                return JsonResponse({"error": "Unexpected response structure"}, status=500)
         else:
             return JsonResponse({"error": "Question cannot be blank or null"}, status=400)
     except Exception as e:
