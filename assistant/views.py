@@ -9,8 +9,9 @@ from langchain_community.chat_message_histories.upstash_redis import UpstashRedi
 from langchain.prompts.chat import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, MessagesPlaceholder
 from langchain_community.vectorstores.chroma import Chroma
 from langchain.text_splitter import CharacterTextSplitter
+from langchain_community.document_loaders.csv_loader import CSVLoader
+from langchain.embeddings.sentence_transformer import SentenceTransformerEmbeddings
 import csv
-import logging
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpRequest
 from django.views.decorators.http import require_POST
@@ -22,32 +23,54 @@ from langchain.callbacks.manager import (
 from langchain.tools.render import render_text_description
 from typing import Optional, Type
 from langchain import hub
+import os
 load_dotenv()
 
 
-def read_csv(file_path: str, csv_args: dict = {'delimiter': ','}):
-    data = []
-    with open(file_path, 'r') as file:
-        csv_reader = csv.reader(file, **csv_args)
-        for row in csv_reader:
-            data.append(' '.join(row))
-    return data
+UPSTASH_URL = os.getenv("UPSTASH_URL")
+UPSTASH_TOKEN = os.getenv("UPSTASH_TOKEN")
+
+# def read_csv(file_path: str, csv_args: dict = {'delimiter': ','}):
+#     data = []
+#     with open(file_path, 'r') as file:
+#         csv_reader = csv.reader(file, **csv_args)
+#         for row in csv_reader:
+#             data.append(' '.join(row))
+#     return data
+
+# def chroma_db_tool() -> Chroma:
+#     logging.info("Initializing Chroma DB tool...")
+#     try:
+#         raw_documents = read_csv('/home/fausto/assistantweb/data/products.csv')
+#         text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+#         chunks = text_splitter.split_documents(raw_documents)
+#         embedding_function = OpenAIEmbeddings()
+#         db = Chroma.from_documents(chunks, embedding_function) 
+#         logging.info(f"Chroma DB initialized successfully with {len(chunks)} chunks.")
+#         return db
+#     except Exception as e:
+#         logging.error(f"Failed to initialize Chroma DB: {e}")
+#         raise
+
 
 def chroma_db_tool() -> Chroma:
-    logging.info("Initializing Chroma DB tool...")
+    """_summary_
+
+    Returns:
+        Chroma: _description_
+    """
+    JsonResponse("Initializing Chroma DB tool...")
     try:
-        raw_documents = read_csv('/home/fausto/assistantweb/data/products.csv')
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-        chunks = text_splitter.split_documents(raw_documents)
-        embedding_function = OpenAIEmbeddings()
-        db = Chroma.from_documents(chunks, embedding_function)
-        logging.info(f"Chroma DB initialized successfully with {len(chunks)} chunks.")
+        embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+        loader = CSVLoader("./products.csv", encoding="windows-1252")  
+        documents = loader.load()
+        db = Chroma.from_documents(documents, embedding_function)
+        
+        JsonResponse(f"Chroma DB initialized successfully with {len(documents)} documents.")
         return db
     except Exception as e:
-        logging.error(f"Failed to initialize Chroma DB: {e}")
+        JsonResponse(f"Failed to initialize Chroma DB: {e}")
         raise
-
-
 
 class SearchTool(BaseTool):
     name = "chroma_db_search"  
@@ -75,8 +98,6 @@ model = ChatOpenAI(
     temperature=0
 )
 
-UPSTASH_URL = "https://us1-excited-haddock-41233.upstash.io"
-UPSTASH_TOKEN ="AaERACQgMDliYjdlZWYtYzgzYi00NmJiLTk2MjktNTllNjZjZDBjZWYxMmE5OGRiNGRmZTgxNDc2YjkyMmQ1YzExOWE0NTljNjI="
 history = UpstashRedisChatMessageHistory(
     url=UPSTASH_URL, token=UPSTASH_TOKEN,ttl=600, session_id="chat1"
 )
