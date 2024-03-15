@@ -1,7 +1,9 @@
 from dotenv import load_dotenv
 from langchain.tools import BaseTool
 from langchain.prompts import PromptTemplate
+from asgiref.sync import sync_to_async
 import json
+from langchain_core.output_parsers import JsonOutputParser
 from langchain_openai import ChatOpenAI,OpenAIEmbeddings
 from langchain.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories.upstash_redis import UpstashRedisChatMessageHistory
@@ -9,7 +11,7 @@ from langchain.prompts.chat import ChatPromptTemplate, SystemMessagePromptTempla
 from langchain_community.vectorstores.chroma import Chroma
 from langchain_community.document_loaders.csv_loader import CSVLoader
 from django.views.decorators.csrf import csrf_exempt
-from django.http import JsonResponse, HttpRequest
+from django.http import JsonResponse
 from django.views.decorators.http import require_POST
 from langchain.agents import AgentExecutor, create_json_chat_agent
 from langchain.callbacks.manager import AsyncCallbackManagerForToolRun,CallbackManagerForToolRun
@@ -84,8 +86,10 @@ memory = ConversationBufferMemory(
     return_messages=True
 )
 
+format_schema = JsonOutputParser()
+
 messages = [
-    SystemMessagePromptTemplate(prompt=PromptTemplate(input_variables=[], template='eres un vendedor de un consecionario que debe ser lo mas amable y amigable posible con el cliente e intentar venderle alguno de nuestros autos a toda costa. tu no tienes ningun conocimiento sobre autos asi que debes responder solamente con los datos proporcionados por tu herramienta: chroma_db_search. puedes decorar esa informacion para hacer un mensaje mas comodo de leer y que parezca una interaccion humana (siempre manteniendo la cordialidad) pero no puedes cambiar los valores recibidos por tu herramienta chroma_db_search')),
+    SystemMessagePromptTemplate(prompt=PromptTemplate(input_variables=[], template='eres un vendedor de un consecionario que debe ser lo mas amable y amigable posible con el cliente e intentar venderle alguno de nuestros autos a toda costa. tu no tienes ningun conocimiento sobre autos asi que debes responder solamente con los datos proporcionados por tu herramienta: chroma_db_search. puedes decorar esa informacion para hacer un mensaje mas comodo de leer y que parezca una interaccion humana (siempre manteniendo la cordialidad) pero no puedes cambiar los valores recibidos por tu herramienta chroma_db_search. ten en cuenta que la seccion de submodelo se refiere unicamente al tamaño del motor')),
     MessagesPlaceholder(variable_name='chat_history', optional=True),
     HumanMessagePromptTemplate(prompt=PromptTemplate(input_variables=['input'], template=
     """TOOLS
@@ -98,14 +102,13 @@ messages = [
     **Option 1:**
     Use this if you want the human to use a tool.
     Markdown code snippet formatted in the following schema:
-    json
+    
     {{
         "action": string, \ The action to take. Must be one of {tool_names}
         "action_input": string \ The input to the action
     }}
     Option 2:
     Use this if you want to respond directly to the human. Markdown code snippet formatted in the following schema:
-    json
 
     {{
 
@@ -147,31 +150,28 @@ agent = AgentExecutor(
     tools=tools,
     input_variables=["input"],
     verbose=True,
-    return_intermediate_steps=True,
+    return_intermediate_steps=False,
 )
-
-
 
 @csrf_exempt
 @require_POST
-def ask(request: HttpRequest):
+def ask(request):
     try:
         data = json.loads(request.body)
         question = data.get('question')
         if question:
-            result = agent.run({'input': question})
+            inputs = {'input': question}
+            result = agent.invoke(inputs)  # Make sure this matches your method for invoking the agent
+            
+            # Process the result to extract serializable content
             if 'output' in result:
-                # Extrae la parte relevante de 'output'.
-                action_input = result['output'].get('action_input')
-                if action_input:
-                    return JsonResponse({"response": action_input})
-                else:
-                    # Si 'action_input' no está presente en 'output', maneja el caso.
-                    return JsonResponse({"error": "No action input found in the response"}, status=500)
+                response_content = result['output']
+                # If you need to include more from the result, ensure it is serializable
+                return JsonResponse({"response": response_content})
             else:
-                # Si la clave 'output' no está en el resultado, devuelve un error.
-                return JsonResponse({"error": "Unexpected response structure"}, status=500)
+                return JsonResponse({"error": "Expected output key not found", "raw_output": str(result)}, status=500)
         else:
             return JsonResponse({"error": "Question cannot be blank or null"}, status=400)
     except Exception as e:
+        # Convert the exception to a string to ensure it is serializable
         return JsonResponse({'error': str(e)}, status=500)
