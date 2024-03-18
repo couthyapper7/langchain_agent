@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 from langchain.tools import BaseTool
 from langchain.prompts import PromptTemplate
-from asgiref.sync import sync_to_async
 import json
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_openai import ChatOpenAI,OpenAIEmbeddings
@@ -77,7 +76,7 @@ model = ChatOpenAI(
 )
 
 history = UpstashRedisChatMessageHistory(
-    url=UPSTASH_URL, token=UPSTASH_TOKEN,ttl=600, session_id="chat1"
+    url=UPSTASH_URL, token=UPSTASH_TOKEN,ttl=600, session_id=id_user
 )
 
 memory = ConversationBufferMemory(
@@ -159,19 +158,16 @@ def ask(request):
     try:
         data = json.loads(request.body)
         question = data.get('question')
+        id_user=data.get("remembertoken")
         if question:
             inputs = {'input': question}
-            result = agent.invoke(inputs)  # Make sure this matches your method for invoking the agent
-            
-            # Process the result to extract serializable content
+            result = agent.invoke(inputs)  
             if 'output' in result:
                 response_content = result['output']
-                # If you need to include more from the result, ensure it is serializable
                 return JsonResponse({"response": response_content})
             else:
                 return JsonResponse({"error": "Expected output key not found", "raw_output": str(result)}, status=500)
         else:
             return JsonResponse({"error": "Question cannot be blank or null"}, status=400)
     except Exception as e:
-        # Convert the exception to a string to ensure it is serializable
         return JsonResponse({'error': str(e)}, status=500)
