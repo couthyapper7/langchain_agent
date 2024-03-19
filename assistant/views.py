@@ -76,7 +76,7 @@ model = ChatOpenAI(
 )
 
 history = UpstashRedisChatMessageHistory(
-    url=UPSTASH_URL, token=UPSTASH_TOKEN,ttl=600, session_id=id_user
+    url=UPSTASH_URL, token=UPSTASH_TOKEN,ttl=600, session_id=id_chat
 )
 
 memory = ConversationBufferMemory(
@@ -158,7 +158,6 @@ def ask(request):
     try:
         data = json.loads(request.body)
         question = data.get('question')
-        id_user=data.get("remembertoken")
         if question:
             inputs = {'input': question}
             result = agent.invoke(inputs)  
