@@ -11,13 +11,14 @@ from langchain_community.vectorstores.chroma import Chroma
 from langchain_community.document_loaders.csv_loader import CSVLoader
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_POST,require_GET
 from langchain.agents import AgentExecutor, create_json_chat_agent
 from langchain.callbacks.manager import AsyncCallbackManagerForToolRun,CallbackManagerForToolRun
 import logging
 from langchain.tools.render import render_text_description
 from typing import Optional
 import os
+from .jwt_settings import *
 load_dotenv()
 
 
@@ -76,7 +77,7 @@ model = ChatOpenAI(
 )
 
 history = UpstashRedisChatMessageHistory(
-    url=UPSTASH_URL, token=UPSTASH_TOKEN,ttl=600, session_id=id_chat
+    url=UPSTASH_URL, token=UPSTASH_TOKEN,ttl=600, session_id="id_chat"
 )
 
 memory = ConversationBufferMemory(
@@ -155,18 +156,79 @@ agent = AgentExecutor(
 @csrf_exempt
 @require_POST
 def ask(request):
+    """manage the method to prompt to the agent
+
+    Args:
+        request (str): (from question) prompt
+
+    Returns:
+        json: agent response
+    """
     try:
         data = json.loads(request.body)
+        token = request.headers.get('Authorization')
         question = data.get('question')
-        if question:
-            inputs = {'input': question}
-            result = agent.invoke(inputs)  
-            if 'output' in result:
-                response_content = result['output']
-                return JsonResponse({"response": response_content})
+        if token:
+            if question:
+                inputs = {'input': question}
+                result = agent.invoke(inputs)  
+                if 'output' in result:
+                    response_content = result['output']
+                    return JsonResponse({"response": response_content})
+                else:
+                    return JsonResponse({"error": "Expected output key not found", "raw_output": str(result)}, status=500)
             else:
-                return JsonResponse({"error": "Expected output key not found", "raw_output": str(result)}, status=500)
+                return JsonResponse({"error": "Question cannot be blank or null"}, status=400)
         else:
-            return JsonResponse({"error": "Question cannot be blank or null"}, status=400)
+            return JsonResponse({"error": "Authorization token is missing"}, status=403)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
+
+@csrf_exempt
+@require_POST
+def create_token(request):
+    """create a token for the user
+
+    Args:
+        request (str): user credentials
+
+    Returns:
+        json: new jwt token and a refresh token 
+    """
+    try:
+        data = json.loads(request.body)
+        username = data.get('username')
+        password = data.get('password')
+        
+        #here is suppouse to have a database with the users that have an apy-key
+        user_id = "123" 
+        access_token = generate_token(user_id)
+        refresh_token = generate_refresh_token(user_id)
+        
+        return JsonResponse({
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+        })
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+@csrf_exempt
+@require_POST
+def refresh_token(request):
+    """refresh the token
+
+    Args:
+        refresh_token (str): the user refresh token
+
+    Returns:
+        json: new_acces_token
+    """
+    data = json.loads(request.body)
+    refresh_token = data.get('refresh_token')
+    if not refresh_token:
+        return JsonResponse({'error': 'Refresh token is missing'}, status=400)
+    new_access_token = refresh_access_token(refresh_token)
+    if isinstance(new_access_token, str) and not new_access_token.startswith('ey'):
+        return JsonResponse({'error': new_access_token}, status=403)
+
+    return JsonResponse({'access_token': new_access_token})
