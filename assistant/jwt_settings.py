@@ -7,6 +7,8 @@ load_dotenv()
 
 SECRET_KEY = os.getenv('JWT_SECRET_KEY')
 ALGORITHM = 'HS256'
+
+
 def generate_token(user_id):
     """Generate JWT token for authentication.
 
