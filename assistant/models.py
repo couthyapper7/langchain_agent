@@ -1,50 +1,64 @@
-from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager
 from django.db import models
 
-class CustomUserManager(BaseUserManager):
-    def create_user(self, email, username, password=None, **extra_fields):
+class MyUserManager(BaseUserManager):
+    def create_user(self, email, username, password=None):
         """
-        Create and return a regular user with an email, username, and password.
+        Creates and saves a User with the given email, username, and password.
         """
         if not email:
-            raise ValueError(('The Email field must be set'))
+            raise ValueError('Users must have an email address')
         if not username:
-            raise ValueError(('The Username field must be set'))
-        
-        email = self.normalize_email(email)
-        user = self.model(email=email, username=username, **extra_fields)
+            raise ValueError('Users must have a username')
+
+        user = self.model(
+            email=self.normalize_email(email),
+            username=username,
+        )
+
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, username, password=None, **extra_fields):
+    def create_superuser(self, email, username, password=None):
         """
-        Create and return a superuser with an email, username, and password.
+        Creates and saves a superuser with the given email, username, and password.
         """
-        extra_fields.setdefault('is_staff', True)
-        extra_fields.setdefault('is_superuser', True)
+        user = self.create_user(
+            email,
+            password=password,
+            username=username,
+        )
+        user.is_admin = True
+        user.save(using=self._db)
+        return user
 
-        if extra_fields.get('is_staff') is not True:
-            raise ValueError(('Superuser must have is_staff=True.'))
-        if extra_fields.get('is_superuser') is not True:
-            raise ValueError(('Superuser must have is_superuser=True.'))
-
-        return self.create_user(email, username, password, **extra_fields)
-    
-class CustomUser(AbstractBaseUser, PermissionsMixin):
-    """
-    User model where email is the unique identifier for authentication
-    and has a username field.
-    """
-    email = models.EmailField(('email address'), unique=True)
-    username = models.CharField(('username'), max_length=150, unique=True)
-    is_staff = models.BooleanField(default=False)
+class MyUser(AbstractBaseUser):
+    email = models.EmailField(verbose_name='email address', max_length=255, unique=True)
+    username = models.CharField(max_length=30, unique=True)
     is_active = models.BooleanField(default=True)
+    is_admin = models.BooleanField(default=False)
 
-    objects = CustomUserManager()
+    objects = MyUserManager()
 
     USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['username']  
+    REQUIRED_FIELDS = ['username']
 
     def __str__(self):
         return self.email
+
+    def has_perm(self, perm, obj=None):
+        "Does the user have a specific permission?"
+        # Simplest possible answer: Yes, always
+        return True
+
+    def has_module_perms(self, app_label):
+        "Does the user have permissions to view the app `app_label`?"
+        # Simplest possible answer: Yes, always
+        return True
+
+    @property
+    def is_staff(self):
+        "Is the user a member of staff?"
+        # All admins are staff
+        return self.is_admin
