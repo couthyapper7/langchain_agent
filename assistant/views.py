@@ -18,8 +18,18 @@ from langchain.callbacks.manager import AsyncCallbackManagerForToolRun,CallbackM
 import logging
 from langchain.tools.render import render_text_description
 from typing import Optional
+from rest_framework.authtoken.models import Token
 import os
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate, login
+from rest_framework import status, views
+from rest_framework.response import Response
+from .serializers import UserSerializer
 from .jwt_settings import *
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.permissions import AllowAny
+from rest_framework.views import APIView
+
 load_dotenv()
 
 
@@ -150,10 +160,17 @@ def ask(request):
         json: agent response
     """
     try:
-        token = request.headers.get('Authorization')
+        token_key = request.headers.get('Authorization').split()[1]
+        if not token_key:
+            return JsonResponse({'error': 'Authorization token is missing'}, status=403)
+        try:
+            token = Token.objects.get(key=token_key)
+        except Token.DoesNotExist:
+            return JsonResponse({'error': 'Invalid token'}, status=403)
         if token:
             data = json.loads(request.body)
             question = data.get('question')
+            user = data.get('user')
             if question:
                 
                 history = UpstashRedisChatMessageHistory(
@@ -186,40 +203,33 @@ def ask(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
-@csrf_exempt
-@require_POST
-def refresh_token(request):
-    data = json.loads(request.body)
-    refresh_token = data.get('refresh_token')
-    if not refresh_token:
-        return JsonResponse({'error': 'Refresh token is missing'}, status=400)
-    new_access_token = refresh_access_token(refresh_token)
-    if isinstance(new_access_token, str) and not new_access_token.startswith('ey'):
-        return JsonResponse({'error': new_access_token}, status=403)
-
-    return JsonResponse({'access_token': new_access_token})
 
 
 
-@csrf_exempt
-@require_POST
-def create_token(request):
-    try:
-        data = json.loads(request.body)
-        username = data.get('username')
-        password = data.get('password')
 
-        user = authenticate(username=username, password=password)
-        print(user)
-        print(username)
-        if user:
-            access_token = generate_token(user.id)
-            refresh_token = generate_refresh_token(user.id)
+class UserCreate(views.APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = UserSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            refresh = RefreshToken.for_user(user)
+            
+            # Optionally, store the tokens in your custom model
+            TokenStore.objects.create(
+                user=user,
+                access_token=str(refresh.access_token),
+                refresh_token=str(refresh)
+            )
+
             return JsonResponse({
-                'access_token': access_token,
-                'refresh_token': refresh_token,
-            })
-        else:
-            return JsonResponse({'error': 'Invalid credentials'}, status=401)
-    except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+                'user': serializer.data,
+                'access_token': str(refresh.access_token),
+                'refresh_token': str(refresh)
+            }, status=status.HTTP_201_CREATED)
+
+        return JsonResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
