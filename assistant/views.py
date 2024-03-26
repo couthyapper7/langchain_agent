@@ -29,7 +29,7 @@ from .jwt_settings import *
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
-
+from .models import *
 load_dotenv()
 
 
@@ -83,7 +83,7 @@ tools = [SearchTool()]
 
 
 model = ChatOpenAI(
-    model='GPT-3.5 Turbo',
+    model='gpt-3.5-turbo-0125',
     temperature=0
 )
 
@@ -96,7 +96,7 @@ memory = ConversationBufferMemory(
 format_schema = JsonOutputParser()
 
 messages = [
-    SystemMessagePromptTemplate(prompt=PromptTemplate(input_variables=[], template='eres un vendedor de un consecionario que debe ser lo mas amable y amigable posible con el cliente e intentar venderle alguno de nuestros autos a toda costa. tu no tienes ningun conocimiento sobre autos asi que debes responder solamente con los datos proporcionados por tu herramienta: chroma_db_search. puedes decorar esa informacion para hacer un mensaje mas comodo de leer y que parezca una interaccion humana (siempre manteniendo la cordialidad) pero no puedes cambiar los valores recibidos por tu herramienta chroma_db_search. ten en cuenta que la seccion de submodelo se refiere unicamente al tamaño del motor')),
+    SystemMessagePromptTemplate(prompt=PromptTemplate(input_variables=[], template='eres un vendedor de un consecionario que debe ser lo mas amable y amigable posible con el cliente e intentar venderle alguno de nuestros autos a toda costa. tu no tienes ningun conocimiento sobre autos asi que debes responder solamente con los datos proporcionados por tu herramienta: chroma_db_search. puedes decorar esa informacion para hacer un mensaje mas comodo de leer y que parezca una interaccion humana (siempre manteniendo la cordialidad) pero no puedes cambiar los valores recibidos por tu herramienta chroma_db_search. ten en cuenta que la seccion de submodelo se refiere unicamente al tamaño del motor. y tienes que recordar la conversacion en todo momento si te hacen una pregunta sobre ellos mismos debes responder con los datos que tienes en tu memoria o pedirle que amplien tu informacion para poder conocerse')),
     MessagesPlaceholder(variable_name='chat_history', optional=True),
     HumanMessagePromptTemplate(prompt=PromptTemplate(input_variables=['input'], template=
     """TOOLS
@@ -160,44 +160,41 @@ def ask(request):
         json: agent response
     """
     try:
-        token_key = request.headers.get('Authorization').split()[1]
-        if not token_key:
-            return JsonResponse({'error': 'Authorization token is missing'}, status=403)
-        try:
-            token = Token.objects.get(key=token_key)
-        except Token.DoesNotExist:
-            return JsonResponse({'error': 'Invalid token'}, status=403)
-        if token:
-            data = json.loads(request.body)
+        data = json.loads(request.body)
+        token = data.get('token')
+        if TokenStore.objects.filter(access_token=token).exists():
             question = data.get('question')
-            user = data.get('user')
-            if question:
-                
-                history = UpstashRedisChatMessageHistory(
-                url=UPSTASH_URL, token=UPSTASH_TOKEN,ttl=600, session_id=token
-                )
-                
-                agent = AgentExecutor(
-                agent=json_agent,
-                llm=model,
-                max_iterations=3,
-                early_stopping_method='generate',
-                memory=history,
-                tools=tools,
-                input_variables=['input'],
-                verbose=True,
-                return_intermediate_steps=False,
-                )
-                
-                inputs = {'input': question}
-                result = agent.invoke(inputs)  
-                if 'output' in result:
-                    response_content = result['output']
-                    return JsonResponse({'response': response_content})
+            user = data.get(str('user'))
+            if user:
+                if question:
+                    
+                    history = UpstashRedisChatMessageHistory(
+                    url=UPSTASH_URL, token=UPSTASH_TOKEN,ttl=600, session_id=user
+                    )
+                    
+                    agent = AgentExecutor(
+                    agent=json_agent,
+                    llm=model,
+                    max_iterations=3,
+                    early_stopping_method='generate',
+                    memory=history,
+                    tools=tools,
+                    input_variables=['input'],
+                    verbose=True,
+                    return_intermediate_steps=False,
+                    )
+                    
+                    inputs = {'input': question}
+                    result = agent.invoke(inputs)  
+                    if 'output' in result:
+                        response_content = result['output']
+                        return JsonResponse({'response': response_content})
+                    else:
+                        return JsonResponse({'error': 'Expected output key not found', 'raw_output': str(result)}, status=500)
                 else:
-                    return JsonResponse({'error': 'Expected output key not found', 'raw_output': str(result)}, status=500)
+                    return JsonResponse({'error': 'Question cannot be blank or null'}, status=400)
             else:
-                return JsonResponse({'error': 'Question cannot be blank or null'}, status=400)
+                return JsonResponse({'error':'user not provided'})
         else:
             return JsonResponse({'error': 'Authorization token is missing'}, status=403)
     except Exception as e:
@@ -211,25 +208,38 @@ class UserCreate(views.APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        """
+        Creates a new user account and generates a new set of authentication tokens.
+
+        This method handles the POST request to the user creation endpoint. It takes the request data to create a new user through the UserSerializer.
+        If the user is successfully created, it generates a refresh token and an access token for the user, stores them, and returns them alongside the user's data.
+        If the user creation fails (e.g., due to invalid data), it returns the error details.
+
+        Args:
+            request (HttpRequest): The request object containing the data for creating a new user. This includes fields like username, email, and password.
+
+        Returns:
+            Response: An HTTP response object. If the user is successfully created, this response includes the HTTP status code 201 (HTTP_201_CREATED), user data, and the authentication tokens. If there's an error (e.g., invalid request data), it returns the errors with the HTTP status code 400 (HTTP_400_BAD_REQUEST).
+        """
         serializer = UserSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
-            refresh = RefreshToken.for_user(user)
-            
-            # Optionally, store the tokens in your custom model
+            refresh = RefreshToken.for_user(user)  
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+
             TokenStore.objects.create(
                 user=user,
-                access_token=str(refresh.access_token),
-                refresh_token=str(refresh)
+                access_token=access_token,  
+                refresh_token=refresh_token 
             )
-
-            return JsonResponse({
+            return Response({
                 'user': serializer.data,
-                'access_token': str(refresh.access_token),
-                'refresh_token': str(refresh)
+                'access_token': access_token,
+                'refresh_token': refresh_token
             }, status=status.HTTP_201_CREATED)
-
-        return JsonResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 
